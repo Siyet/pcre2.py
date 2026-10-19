@@ -136,7 +136,10 @@ def test_subject_subclasses_and_reentry(matcher_api):
 
 
 def test_reentry_while_reporting_engine_error(matcher_api, monkeypatch):
-    matcher = matcher_api.prepare(pcre2.compile(rb"(*UTF).", jit=False))
+    compiled = pcre2.compile(rb"(*UTF).", jit=False)
+    matcher = matcher_api.prepare(compiled)
+    with pytest.raises(pcre2.LibraryError) as public:
+        compiled.search(b"\xff")
     original = pcre2.LibraryError.__init__
     calls = []
 
@@ -145,8 +148,10 @@ def test_reentry_while_reporting_engine_error(matcher_api, monkeypatch):
         original(error, *args, **kwargs)
 
     monkeypatch.setattr(pcre2.LibraryError, "__init__", initialize)
-    with pytest.raises(pcre2.LibraryError):
+    with pytest.raises(pcre2.LibraryError) as native:
         matcher_api.search(matcher, b"\xff")
+    assert str(native.value) == str(public.value)
+    assert native.value.code == public.value.code
     assert calls == [True]
     assert matcher_api.search(matcher, b"x") is True
 

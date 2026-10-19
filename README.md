@@ -197,9 +197,9 @@ and search raise `NotImplementedError` on those builds.
 A matcher retains the compiled code present at preparation time, its provider,
 and reusable match storage. Deleting the original `Pattern`, or replacing its
 compiled code later, does not invalidate the matcher or change its pattern. JIT
-code already attached to that compiled code is used normally. Shared matcher
-calls are serialized by the GIL; reentrant calls use separate temporary match
-storage. Compilation and matcher preparation are outside the per-subject path.
+code already attached to that compiled code is used normally. The GIL remains
+held during native matching, and Python callout callbacks are unsupported. Calls sharing a matcher therefore reuse its match storage without
+a lock. Compilation and matcher preparation are outside the per-subject path.
 
 This API does not return captures or accept position/end-position arguments.
 Patterns with callout callbacks are rejected with `NotImplementedError`. Existing

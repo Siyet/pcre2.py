@@ -20,13 +20,6 @@ from _libpcre2 cimport *
 
 from cpython.module cimport PyModule_Check
 
-cdef extern from "pythread.h":
-    ctypedef void *PyThread_type_lock
-    PyThread_type_lock PyThread_allocate_lock()
-    void PyThread_free_lock(PyThread_type_lock)
-    int PyThread_acquire_lock(PyThread_type_lock, int)
-    void PyThread_release_lock(PyThread_type_lock)
-
 cdef extern from *:
     """
     static int pcre2_matcher_gil_build(void) {
@@ -853,8 +846,6 @@ cdef class _BooleanMatcher:
     cdef PCRE2Code code
     cdef object provider
     cdef pcre2_match_data_t *scratch
-    cdef pcre2_match_context_t *context
-    cdef PyThread_type_lock lock
 
     def __init__(self, *args, **kwargs):
         raise TypeError("Cannot create '_BooleanMatcher' instances directly")
@@ -862,10 +853,6 @@ cdef class _BooleanMatcher:
     def __dealloc__(self):
         if self.scratch is not NULL:
             pcre2_match_data_free(self.scratch)
-        if self.context is not NULL:
-            pcre2_match_context_free(self.context)
-        if self.lock is not NULL:
-            PyThread_free_lock(self.lock)
 
 
 cdef PyObject *boolean_matcher_new(
@@ -894,12 +881,6 @@ cdef PyObject *boolean_matcher_new(
     matcher = _BooleanMatcher.__new__(_BooleanMatcher)
     matcher.provider = provider
     matcher.code = code
-    matcher.lock = PyThread_allocate_lock()
-    if matcher.lock is NULL:
-        raise MemoryError
-    matcher.context = pcre2_match_context_create(NULL)
-    if matcher.context is NULL:
-        raise MemoryError
     matcher.scratch = pcre2_match_data_create_from_pattern(matcher.code.ptr, NULL)
     if matcher.scratch is NULL:
         raise MemoryError
@@ -916,8 +897,6 @@ cdef int boolean_matcher_search(
     cdef uint8_t *buffer
     cdef size_t length
     cdef uint32_t options = 0
-    cdef pcre2_match_data_t *scratch = NULL
-    cdef bint acquired = False
     cdef int rc
 
     if not pcre2_matcher_gil_build():
@@ -926,7 +905,7 @@ cdef int boolean_matcher_search(
         raise TypeError("Expected a boolean matcher")
     matcher = obj
     if (<PyObject *>matcher.code is NULL or matcher.code is None or matcher.code.ptr is NULL or
-            matcher.scratch is NULL or matcher.context is NULL or matcher.lock is NULL):
+            matcher.scratch is NULL):
         raise TypeError("Uninitialized boolean matcher")
 
     # Preserve public normalization for subclasses and bytes-like subjects.
@@ -945,26 +924,14 @@ cdef int boolean_matcher_search(
     if PyUnicode_Check(subject):
         options |= PCRE2_NO_UTF_CHECK
 
-    acquired = PyThread_acquire_lock(matcher.lock, 0) != 0
-    if acquired:
-        scratch = matcher.scratch
-    else:
-        scratch = pcre2_match_data_create_from_pattern(matcher.code.ptr, NULL)
-        if scratch is NULL:
-            raise MemoryError
-    try:
-        rc = pcre2_match(
-            matcher.code.ptr, buffer, length, 0, options, scratch, matcher.context
-        )
-        if rc == PCRE2_ERROR_NOMATCH:
-            return 0
-        raise_from_rc(rc)
-        return 1
-    finally:
-        if acquired:
-            PyThread_release_lock(matcher.lock)
-        else:
-            pcre2_match_data_free(scratch)
+    # The GIL remains held and Python callout callbacks are unsupported.
+    rc = pcre2_match(
+        matcher.code.ptr, buffer, length, 0, options, matcher.scratch, NULL
+    )
+    if rc == PCRE2_ERROR_NOMATCH:
+        return 0
+    raise_from_rc(rc)
+    return 1
 
 
 cdef void boolean_api_free(object capsule) noexcept:
